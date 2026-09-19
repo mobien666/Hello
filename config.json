@@ -1,0 +1,15 @@
+{
+  "location": {
+    "name": "東京都千代田区",
+    "latitude": 35.6895,
+    "longitude": 139.6917,
+    "timezone": "Asia/Tokyo"
+  },
+  "timeline_hours": [6, 9, 12, 15, 18, 21],
+  "thresholds": {
+    "umbrella_precipitation_probability": 50,
+    "umbrella_precipitation_mm": 1.0,
+    "strong_wind_speed_ms": 10.0,
+    "strong_gust_ms": 15.0
+  }
+}

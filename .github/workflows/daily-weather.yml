@@ -1,0 +1,86 @@
+name: 毎朝の天気通知
+
+on:
+  schedule:
+    # 22:50 UTC = 7:50 JST。GitHub Actions のスケジュールは毎時 00 分に混み合って
+    # 遅延するため、少し前倒しで起動して 8 時前後に届くようにしている。
+    - cron: '50 22 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '通知せずレポート内容だけ確認する'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: daily-weather
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Tokyo
+      GOOGLE_POLLEN_API_KEY: ${{ secrets.GOOGLE_POLLEN_API_KEY }}
+      # 地点を変えたいときは config.json を編集するか、この 3 つを Variables に設定する
+      WEATHER_LATITUDE: ${{ vars.WEATHER_LATITUDE }}
+      WEATHER_LONGITUDE: ${{ vars.WEATHER_LONGITUDE }}
+      WEATHER_LOCATION_NAME: ${{ vars.WEATHER_LOCATION_NAME }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ロジックのテスト
+        run: python3 scripts/test_weather_report.py
+
+      - name: 天気レポートを生成
+        run: |
+          python3 scripts/weather_report.py \
+            --output "$RUNNER_TEMP/report.md" \
+            --title-output "$RUNNER_TEMP/title.txt"
+
+      - name: 生成結果をジョブサマリーに出す
+        run: cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Issue に通知を投稿
+        if: ${{ github.event_name == 'schedule' || !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MENTION: ${{ vars.NOTIFY_MENTION || github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          # 通知はラベル daily-weather を付けた Issue 1 枚にぶら下げる。
+          issue=$(gh issue list --label daily-weather --state open --limit 1 \
+                    --json number --jq '.[0].number // empty')
+
+          if [ -z "$issue" ]; then
+            gh label create daily-weather \
+              --color '1D76DB' --description '毎朝の天気通知' 2>/dev/null || true
+            body='毎朝 8 時ごろ、この Issue に当日の天気・花粉・服装をコメントします。'
+            body="${body}"$'\n''通知を止めたいときはこの Issue を Close するか、ワークフローを無効化してください。'
+            url=$(gh issue create \
+              --title '🌤️ 毎朝の天気通知' \
+              --label daily-weather \
+              --body "$body")
+            issue="${url##*/}"
+          fi
+
+          # bot が立てた Issue は購読対象にならないので、本文でメンションして通知を飛ばす。
+          {
+            echo "@${MENTION}"
+            echo
+            cat "$RUNNER_TEMP/report.md"
+          } > "$RUNNER_TEMP/comment.md"
+
+          gh issue comment "$issue" --body-file "$RUNNER_TEMP/comment.md"
+          gh issue edit "$issue" --title "$(cat "$RUNNER_TEMP/title.txt")"
