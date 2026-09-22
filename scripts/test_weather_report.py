@@ -152,5 +152,63 @@ class MarkdownTest(unittest.TestCase):
         self.assertTrue(title)
 
 
+class UnitsTest(unittest.TestCase):
+    def test_forecast_request_pins_wind_speed_to_ms(self):
+        """Open-Meteo の風速の既定は km/h。表示が m/s なので明示していないと値が 3.6 倍になる。"""
+        captured = {}
+
+        def fake_get(url, params=None, **kwargs):
+            captured["url"] = url
+            captured["params"] = params
+            return {}
+
+        original = wr.http_get_json
+        wr.http_get_json = fake_get
+        try:
+            wr.fetch_forecast(35.6895, 139.6917, "Asia/Tokyo")
+        finally:
+            wr.http_get_json = original
+
+        self.assertEqual(captured["params"]["wind_speed_unit"], "ms")
+        self.assertEqual(captured["params"]["temperature_unit"], "celsius")
+        self.assertEqual(captured["params"]["precipitation_unit"], "mm")
+
+
+class DaytimePrecipitationTest(unittest.TestCase):
+    @staticmethod
+    def night_rain_hourly() -> dict:
+        """深夜だけ強く降り、日中は降らない日。終日の最大値だけ見ると判断を誤る。"""
+        hours = [f"2026-09-22T{h:02d}:00" for h in range(24)]
+        probability = [94 if h < 5 else 10 for h in range(24)]
+        amount = [6.0 if h < 5 else 0.0 for h in range(24)]
+        return {"time": hours, "precipitation_probability": probability, "precipitation": amount}
+
+    def test_night_rain_is_excluded_from_daytime(self):
+        probability, amount = wr.daytime_precipitation(self.night_rain_hourly())
+        self.assertEqual(probability, 10)
+        self.assertEqual(amount, 0.0)
+
+    def test_umbrella_advice_follows_daytime_not_all_day(self):
+        forecast = sample_forecast()
+        forecast["hourly"].update(self.night_rain_hourly())
+        forecast["daily"]["precipitation_probability_max"] = [94]
+        forecast["daily"]["precipitation_sum"] = [30.0]
+
+        _, body = wr.build_markdown(CONFIG, forecast, [], "推定", "注記")
+        self.assertIn("終日の最大 94%", body)
+        self.assertIn("日中 6〜21時 10%", body)
+        self.assertNotIn("傘を持って出る", body)
+
+    def test_daytime_rain_still_triggers_umbrella(self):
+        forecast = sample_forecast()
+        forecast["hourly"]["precipitation_probability"] = [80] * 24
+        forecast["hourly"]["precipitation"] = [3.0] * 24
+        _, body = wr.build_markdown(CONFIG, forecast, [], "推定", "注記")
+        self.assertIn("傘", body)
+
+    def test_empty_hourly_returns_none(self):
+        self.assertEqual(wr.daytime_precipitation({}), (None, None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

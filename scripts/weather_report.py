@@ -133,6 +133,10 @@ def fetch_forecast(latitude: float, longitude: float, timezone: str) -> dict[str
         "longitude": longitude,
         "timezone": timezone,
         "forecast_days": 1,
+        # 既定の風速単位は km/h。表示は m/s なのでここで揃えておく。
+        "wind_speed_unit": "ms",
+        "temperature_unit": "celsius",
+        "precipitation_unit": "mm",
         "current": ",".join([
             "temperature_2m", "apparent_temperature", "relative_humidity_2m",
             "precipitation", "weather_code", "wind_speed_10m", "wind_direction_10m",
@@ -375,6 +379,32 @@ def format_number(value: Any, unit: str = "", digits: int = 1) -> str:
     return f"{float(value):.{digits}f}{unit}"
 
 
+def daytime_precipitation(hourly: dict[str, Any], start_hour: int = 6,
+                          end_hour: int = 21) -> tuple[float | None, float | None]:
+    """日中（既定 6〜21 時）の降水確率の最大と降水量の合計。
+
+    終日の最大値は深夜の雨に引きずられることがあり、朝の身支度の判断材料にならない。
+    """
+    times: list[str] = hourly.get("time") or []
+    probabilities: list[float] = []
+    amounts: list[float] = []
+    for index, stamp in enumerate(times):
+        try:
+            hour = datetime.fromisoformat(stamp).hour
+        except ValueError:
+            continue
+        if not start_hour <= hour <= end_hour:
+            continue
+        probability = hourly_value(hourly, "precipitation_probability", index)
+        if isinstance(probability, (int, float)):
+            probabilities.append(float(probability))
+        amount = hourly_value(hourly, "precipitation", index)
+        if isinstance(amount, (int, float)):
+            amounts.append(float(amount))
+    return (max(probabilities) if probabilities else None,
+            sum(amounts) if amounts else None)
+
+
 def build_timeline_rows(hourly: dict[str, Any], wanted_hours: list[int]) -> list[list[str]]:
     """3時間おきなど、指定した時刻の行だけを抜き出す。"""
     times: list[str] = hourly.get("time") or []
@@ -428,8 +458,12 @@ def build_markdown(config: dict[str, Any], forecast: dict[str, Any],
     wind_direction = daily_value("wind_direction_10m_dominant")
     humidity_mean = mean(hourly.get("relative_humidity_2m") or [])
 
-    advice, notes = clothing_advice(feels_max, feels_min, wind_max, gust_max,
-                                    precipitation_probability, precipitation_sum, thresholds)
+    day_probability, day_precipitation = daytime_precipitation(hourly)
+    advice, notes = clothing_advice(
+        feels_max, feels_min, wind_max, gust_max,
+        day_probability if day_probability is not None else precipitation_probability,
+        day_precipitation if day_precipitation is not None else precipitation_sum,
+        thresholds)
 
     title = (f"☀️ {today.isoformat()}({weekday}) {location['name']}の天気 — "
              f"{describe_weather(weather_code).split(' ', 1)[-1]} "
@@ -450,8 +484,10 @@ def build_markdown(config: dict[str, Any], forecast: dict[str, Any],
     lines.append(f"| 🌡️ 気温 | 最高 {format_number(temp_max, '℃')} / 最低 {format_number(temp_min, '℃')} |")
     lines.append(f"| 🤔 体感気温 | 最高 {format_number(feels_max, '℃')} / 最低 {format_number(feels_min, '℃')} |")
     lines.append(f"| 💧 湿度 | 平均 {format_number(humidity_mean, '%', 0)} |")
-    lines.append(f"| ☔ 降水確率 | 最大 {format_number(precipitation_probability, '%', 0)} |")
-    lines.append(f"| 🌧️ 降水量 | 合計 {format_number(precipitation_sum, ' mm')} |")
+    lines.append(f"| ☔ 降水確率 | 終日の最大 {format_number(precipitation_probability, '%', 0)}"
+                 f"（日中 6〜21時 {format_number(day_probability, '%', 0)}） |")
+    lines.append(f"| 🌧️ 降水量 | 終日 合計 {format_number(precipitation_sum, ' mm')}"
+                 f"（日中 {format_number(day_precipitation, ' mm')}） |")
     lines.append(f"| 💨 風 | {describe_wind_direction(wind_direction)}の風 "
                  f"最大 {format_number(wind_max, ' m/s')}（瞬間 {format_number(gust_max, ' m/s')}）"
                  f"{'・' + beaufort_note(wind_max) if beaufort_note(wind_max) else ''} |")
